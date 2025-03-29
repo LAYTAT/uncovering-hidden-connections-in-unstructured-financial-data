@@ -1521,6 +1521,13 @@ class CdkStack(Stack):
             s3_notifications.LambdaDestination(fn_s3_pipeline_ingestion_trigger),
             s3.NotificationKeyFilter(suffix=".pdf")
         )
+        
+        # Add notification for HTML files
+        s3_ingestion_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3_notifications.LambdaDestination(fn_s3_pipeline_ingestion_trigger),
+            s3.NotificationKeyFilter(suffix=".html")
+        )
 
         # Create the EventBridge rule
         rule = events.Rule(

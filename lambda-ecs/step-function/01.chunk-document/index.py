@@ -6,6 +6,7 @@ import boto3
 import uuid
 import time
 import urllib.parse
+from bs4 import BeautifulSoup
 
 from connectionsinsights.bedrock import (
     cleanJSONString,
@@ -23,6 +24,17 @@ dynamodb = boto3.resource('dynamodb')
 dynamodb_table_name = os.environ["DDBTBL_INGESTION"]
 table = dynamodb.Table(dynamodb_table_name)
 extractor = os.environ.get("EXTRACTOR", "TEXTRACT")
+
+def extract_html_text(local_file_path):
+    """Extract text from HTML file"""
+    with open(local_file_path, 'r', encoding='utf-8') as file:
+        soup = BeautifulSoup(file, 'html.parser')
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+        # Get text and split into pages (by sections or divs)
+        sections = soup.find_all(['div', 'section', 'article']) or [soup]
+        return [section.get_text(separator=' ', strip=True) for section in sections]
 
 def qb_generateDocumentSummary(chunks,summaryChunkCount):
     text = ' '.join([chunks[i]["text"] for i in range(int(summaryChunkCount))])
@@ -137,27 +149,32 @@ def splitDocument(arr_text):
     return chunks
 
 def extract_document(s3_bucket, s3_key):
-    if extractor == "TEXTRACT":
-        return extract_text(s3_bucket, s3_key)
-    elif extractor == "PYPDF":
-        # Download the file from S3
-        local_file_path = os.path.join(tempfile.gettempdir(), s3_key.split("/")[-1])
-        s3.download_file(s3_bucket, s3_key, local_file_path)
-        
-        # read in PDF file using pypdf
-        pdfFileObj = open(local_file_path, 'rb')
-        pdfReader = pypdf.PdfReader(pdfFileObj)
-        
-        arr_text = []
-        for page in pdfReader.pages:
-            arr_text.append(page.extract_text())
-        
-        # close PDF file
-        pdfFileObj.close()
-        os.remove(local_file_path)
-        return arr_text
-    else:
-        raise Exception("Invalid extractor")
+    # Download the file from S3
+    local_file_path = os.path.join(tempfile.gettempdir(), s3_key.split("/")[-1])
+    s3.download_file(s3_bucket, s3_key, local_file_path)
+    
+    # Determine file type by extension
+    file_extension = os.path.splitext(s3_key.lower())[1]
+    
+    try:
+        if file_extension == '.pdf':
+            if extractor == "TEXTRACT":
+                return extract_text(s3_bucket, s3_key)
+            elif extractor == "PYPDF":
+                # read in PDF file using pypdf
+                with open(local_file_path, 'rb') as pdfFileObj:
+                    pdfReader = pypdf.PdfReader(pdfFileObj)
+                    return [page.extract_text() for page in pdfReader.pages]
+            else:
+                raise Exception("Invalid extractor")
+        elif file_extension in ['.html', '.htm']:
+            return extract_html_text(local_file_path)
+        else:
+            raise Exception(f"Unsupported file type: {file_extension}")
+    finally:
+        # Clean up temporary file
+        if os.path.exists(local_file_path):
+            os.remove(local_file_path)
 
 def lambda_handler(event, context):
     uuids = []
